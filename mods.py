@@ -122,6 +122,10 @@ def load_xml_json(r, tag,mods_url):
         if x.helddate:
             helddate=parse(str(x.helddate))['helddate']
 
+    if helddate=="":
+        for x in soup('origininfo'):
+            helddate =json.dumps(parse(str(x.dateissued))['dateissued']['#text'])
+
     data = {'TAG':tag,'MODS_URL':mods_url,'HELD_DATE':helddate,'URL':url,'PDF':pdf,'NAMES':namesList,'CONG_MEMBERS':congmemberList,'ORIGIN_INFO':origininfoList,'EXTENSIONS':extensionList,'TITLE_INFO':titleinfoList,'IDENTIFIER':identifier,'CONG_COMMITTEE':congcommitteeList,'WITNESS':witnessList}
     db.congressional.hearings.save(data)
 
