@@ -6,11 +6,13 @@ from time import sleep
 from datetime import datetime
 from pymongo import MongoClient
 from xmltodict import parse
+from urllib.parse import urlparse , parse_qs
 
 log_template="{url}\t{status}\t{date}\n"
 db = MongoClient("dsl_search_mongo",27017)
-url_template="https://www.gpo.gov/fdsys/search/search.action?sr={0}&originalSearch=collection:CHRG&st=collection:CHRG&ps=100&na=__congressnum&se=__{1}true&sb=dno&timeFrame=&dateBrowse=&govAuthBrowse=&collection=&historical=true"
-
+base_url ="https://www.gpo.gov"
+url_template= base_url + "/fdsys/search/search.action?sr={0}&originalSearch=collection:CHRG&st=collection:CHRG&ps=100&na=__congressnum&se=__{1}true&sb=dno&timeFrame=&dateBrowse=&govAuthBrowse=&collection=&historical=true"
+#modsURL_template = "https://www.gpo.gov/fdsys/pkg/{0}/mods.xml"
 def get_chrg_ids(s,url_template,log,page=1,congress=99):
     try:
         r=s.get(url_template.format(page,congress))
@@ -27,8 +29,20 @@ def get_chrg_ids(s,url_template,log,page=1,congress=99):
     valid_ids=[]
     for link in links:
         end_url=link.split('/')[-1]
-        if re.match('^CHRG*',end_url,re.IGNORECASE):
-            valid_ids.append(end_url.split('.')[0])
+        if re.match('^pagedeta*',end_url,re.IGNORECASE):
+            link_parse=urlparse(link)
+            query=parse_qs(link_parse.query)
+            tag=query['packageId'][0]
+            rd = s.get(base_url + link)
+            soupd = BeautifulSoup(rd.text,'html.parser')
+            mods_url=""
+            for linkd in soupd.findAll('a'):
+                if linkd.get('href'):
+                    temp=linkd.get('href')
+                    if temp.split('/')[-1]=="mods.xml":
+                        mods_url=temp
+                        break
+            valid_ids.append({'tag':tag,'mods_url':mods_url})
     return valid_ids
 
 def get_ids(s,url_template,congress,log):
@@ -42,22 +56,18 @@ def get_ids(s,url_template,congress,log):
 
 
 def modsParser(s,tag,xmlURL,log):
-    temp=xmlURL.replace(tag,'{0}')
-    temp_tag=tag.replace('-err','').replace('-ptERR','').replace('-pterr','')
-    temp_tag=temp_tag.split('-pt')[0]
-    r = s.get(temp.format(temp_tag))
+    try:
+        r = s.get(xmlURL)
+    except:
+        sleep(15)
+        r = s.get(xmlURL)
     log.write(log_template.format(url=xmlURL,status=r.status_code,date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     try:
-        load_xml_json(r,tag)
+        load_xml_json(r,tag,xmlURL)
     except:
-        try:
-            try_url="https://www.gpo.gov/fdsys/granule/{0}/{1}/mods.xml"
-            r = s.get(try_url.format(tag.split('-v')[0],tag))
-            load_xml_json(r,tag) 
-        except:
-            log.write("ERROR: {0} {1}\n".format(tag,xmlURL))
+        log.write("ERROR: {0} {1}\n".format(tag,xmlURL))
 
-def load_xml_json(r, tag):
+def load_xml_json(r, tag,mods_url):
     soup = BeautifulSoup(r.text,'html.parser')
     namesList=[]
     congmemberList=[]
@@ -112,7 +122,7 @@ def load_xml_json(r, tag):
         if x.helddate:
             helddate=parse(str(x.helddate))['helddate']
 
-    data = {'TAG':tag,'HELD_DATE':helddate,'URL':url,'PDF':pdf,'NAMES':namesList,'CONG_MEMBERS':congmemberList,'ORIGIN_INFO':origininfoList,'EXTENSIONS':extensionList,'TITLE_INFO':titleinfoList,'IDENTIFIER':identifier,'CONG_COMMITTEE':congcommitteeList,'WITNESS':witnessList}
+    data = {'TAG':tag,'MODS_URL':mods_url,'HELD_DATE':helddate,'URL':url,'PDF':pdf,'NAMES':namesList,'CONG_MEMBERS':congmemberList,'ORIGIN_INFO':origininfoList,'EXTENSIONS':extensionList,'TITLE_INFO':titleinfoList,'IDENTIFIER':identifier,'CONG_COMMITTEE':congcommitteeList,'WITNESS':witnessList}
     db.congressional.hearings.save(data)
 
 #def load_xml_json(r,tag):
@@ -125,12 +135,13 @@ if __name__ == "__main__":
     v_ids=[]
     #db = MongoClient("dsl_search_mongo",27017)
     s = requests.Session()
-    modsURL_template = "https://www.gpo.gov/fdsys/pkg/{0}/mods.xml"
+    #modsURL_template = "https://www.gpo.gov/fdsys/pkg/{0}/mods.xml"
     log = open(sys.argv[3],'w')
     for congress in range(int(sys.argv[1]),int(sys.argv[2])):
         v_ids = v_ids + get_ids(s,url_template,congress,log)
+    s = requests.Session()
     for itm in v_ids:
-        if db.congressional.hearings.find({'tag':itm}).count()<1:
-            modsParser(s,itm,modsURL_template.format(itm),log)
-    log.write(str(v_ids))
+        if db.congressional.hearings.find({'TAG':itm['tag']}).count()<1:
+            modsParser(s,itm['tag'],itm['mods_url'],log)
+    log.write(str(len(v_ids)))
     log.close()
