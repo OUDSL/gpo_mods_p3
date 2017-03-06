@@ -4,12 +4,13 @@ import requests, sys, re,json
 from bs4 import BeautifulSoup
 from time import sleep
 from datetime import datetime
-from pymongo import MongoClient
+#from pymongo import MongoClient
 from xmltodict import parse
 from urllib.parse import urlparse , parse_qs
 
+headers ={"Content-Type":"application/json","Authorization":"Token {0}"}
 log_template="{url}\t{status}\t{date}\n"
-db = MongoClient("dsl_search_mongo",27017)
+#db = MongoClient("dsl_search_mongo",27017)
 base_url ="https://www.gpo.gov"
 url_template= base_url + "/fdsys/search/search.action?sr={0}&originalSearch=collection:CHRG&st=collection:CHRG&ps=100&na=__congressnum&se=__{1}true&sb=dno&timeFrame=&dateBrowse=&govAuthBrowse=&collection=&historical=true"
 #modsURL_template = "https://www.gpo.gov/fdsys/pkg/{0}/mods.xml"
@@ -127,25 +128,33 @@ def load_xml_json(r, tag,mods_url):
             helddate =json.dumps(parse(str(x.dateissued))['dateissued']['#text'])
 
     data = {'TAG':tag,'MODS_URL':mods_url,'HELD_DATE':helddate,'URL':url,'PDF':pdf,'NAMES':namesList,'CONG_MEMBERS':congmemberList,'ORIGIN_INFO':origininfoList,'EXTENSIONS':extensionList,'TITLE_INFO':titleinfoList,'IDENTIFIER':identifier,'CONG_COMMITTEE':congcommitteeList,'WITNESS':witnessList}
-    db.congressional.hearings.save(data)
+    _save_hearing_data(data) #db.congressional.hearings.save(data)
 
-#def load_xml_json(r,tag):
-#    data = parse(r.text)
-#    data["tag"]=tag
-#    x = json.loads(json.dumps(data).replace("@",'').replace("#",''))
-#    db.congressional.hearings.save(x)
+def _save_hearing_data(data):
+    url ="https://cc.lib.ou.edu/api-dsl/data_store/data/congressional/hearings/"
+    req = requests.post(url,data=json.dumps(data),headers=headers)
+    if not req.status_code < 400:
+        raise Exception("Error Saving to API")
+def _check_tag_exists(tag):
+    url ="https://cc.lib.ou.edu/api-dsl/data_store/data/congressional/hearings/.json?query={'filter':{'TAG':'%s'}}" % (tag)
+    req= requests.get(url)
+    data=req.json()
+    if data['count']>0:
+        return True
+    else:
+        return False
 
 if __name__ == "__main__":
-    v_ids=[]
-    #db = MongoClient("dsl_search_mongo",27017)
     s = requests.Session()
-    #modsURL_template = "https://www.gpo.gov/fdsys/pkg/{0}/mods.xml"
     log = open(sys.argv[3],'w')
+    headers["Authorization"]= "Token {0}".format(sys.argv[4])
+    results=[]
     for congress in range(int(sys.argv[1]),int(sys.argv[2])):
-        v_ids = v_ids + get_ids(s,url_template,congress,log)
-    s = requests.Session()
-    for itm in v_ids:
-        if db.congressional.hearings.find({'TAG':itm['tag']}).count()<1:
-            modsParser(s,itm['tag'],itm['mods_url'],log)
-    log.write(str(len(v_ids)))
+        counter=0
+        for itm in get_ids(s,url_template,congress,log):
+            counter+=1
+            if not _check_tag_exists(itm['tag']): 
+                modsParser(s,itm['tag'],itm['mods_url'],log)
+        results.append("Congress: {0}, Processed: {1}".format(congress,counter))
+    log.write(str(results))
     log.close()
